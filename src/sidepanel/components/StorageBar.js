@@ -12,7 +12,7 @@ import { t } from '../utils/i18n.js';
 
 export class StorageBar {
   #syncSize = 0;
-  #syncTotal = 8192; // 8KB
+  #syncTotal = 5 * 1024 * 1024; // 5MB
   #syncPercent = 0;
   #updateDebounce = null;
   #hasShownWarning = false;
@@ -82,8 +82,8 @@ export class StorageBar {
    */
   async #updateStorageInfo() {
     try {
-      // 计算 sync 笔记
-      const result = await chrome.storage.sync.get({ slidenote_notes: [] });
+      // 计算 local 笔记
+      const result = await chrome.storage.local.get({ slidenote_notes: [] });
       const notes = result.slidenote_notes || [];
       const size = JSON.stringify(notes).length;
 
@@ -114,7 +114,7 @@ export class StorageBar {
 
     // 更新文本
     if (textEl) {
-      textEl.textContent = `${t('syncStorage') || '同步'}: ${sizeKB}/${totalKB}KB`;
+      textEl.textContent = `${t('localStorage') || '本地'}: ${sizeKB}/${totalKB}KB`;
     }
 
     // 更新百分比（只在超过50%时显示）
@@ -160,12 +160,12 @@ export class StorageBar {
    * @private
    */
   async #showDetailDialog() {
-    // 获取同步笔记信息
-    const syncData = await chrome.storage.sync.get({ slidenote_notes: [] });
+    // 获取本地笔记信息
+    const syncData = await chrome.storage.local.get({ slidenote_notes: [] });
     const notes = syncData.slidenote_notes || [];
 
     const syncSize = JSON.stringify(notes).length;
-    const syncPercent = Math.min(100, (syncSize / 8192) * 100);
+    const syncPercent = Math.min(100, (syncSize / (5 * 1024 * 1024)) * 100);
 
     // 创建对话框
     const overlay = document.createElement('div');
@@ -187,16 +187,16 @@ export class StorageBar {
             <span class="storage-detail-title">${t('syncNotes') || '笔记'}</span>
             <span class="storage-detail-percent">${Math.round(syncPercent)}%</span>
           </div>
-          <div class="storage-detail-size">${(syncSize / 1024).toFixed(2)} KB / 8 KB</div>
+          <div class="storage-detail-size">${(syncSize / 1024).toFixed(2)} KB / 5 MB</div>
           <div class="storage-detail-progress">
             <div class="storage-detail-fill ${syncPercent >= 80 ? 'danger' : syncPercent >= 50 ? 'warning' : ''}"
                  style="width: ${syncPercent}%"></div>
           </div>
-          <div class="storage-detail-note">${t('syncNotesDesc') || '跨设备同步，可在所有设备上访问'}</div>
+          <div class="storage-detail-note">${t('localNotesDesc') || '本机存储，数据仅保存在当前设备'}</div>
         </div>
 
         <div class="storage-detail-tip">
-          💡 ${t('storageTip') || '建议只存储重要信息，避免超出同步限制。'}
+          💡 ${t('storageTip') || '数据存储在本地，容量充足。'}
         </div>
       </div>
 

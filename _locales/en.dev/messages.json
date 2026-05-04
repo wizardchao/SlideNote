@@ -119,6 +119,10 @@
     "message": "Last edited",
     "description": "Last edited time"
   },
+  "wordCount": {
+    "message": "Words",
+    "description": "Word count label"
+  },
   "copyAsMarkdown": {
     "message": "Copy as Markdown",
     "description": "Copy as Markdown source"

@@ -187,6 +187,10 @@
     "message": "Note count",
     "description": "Note count label"
   },
+  "wordCount": {
+    "message": "Words",
+    "description": "Word count label"
+  },
   "about": {
     "message": "About",
     "description": "About button"

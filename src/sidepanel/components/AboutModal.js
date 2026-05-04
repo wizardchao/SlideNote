@@ -52,14 +52,14 @@ export class AboutModal {
    */
   async #updateStorageInfo() {
     try {
-      const syncData = await chrome.storage.sync.get({ slidenote_notes: [] });
+      const syncData = await chrome.storage.local.get({ slidenote_notes: [] });
 
-      // 计算 sync 容量（限制 100KB）
+      // 计算 local 容量（限制 5MB）
       const syncNotes = syncData.slidenote_notes || [];
       const syncSize = JSON.stringify(syncNotes).length;
       const syncKB = (syncSize / 1024).toFixed(2);
-      const syncMaxKB = (100).toFixed(0);
-      const syncPercent = Math.min(100, (syncSize / 102400) * 100).toFixed(0);
+      const syncMaxKB = (5 * 1024).toFixed(0);
+      const syncPercent = Math.min(100, (syncSize / (5 * 1024 * 1024)) * 100).toFixed(0);
 
       // 更新 DOM
       const syncEl = this.#modal.querySelector('#syncStorage');
@@ -124,7 +124,7 @@ export class AboutModal {
               <span class="storage-value" id="syncStorage">计算中...</span>
             </div>
           </div>
-          <div class="storage-note">${t('storageNote') || '笔记会在设备间自动同步'}</div>
+          <div class="storage-note">${t('storageNote') || '数据存储在本地，容量充足'}</div>
         </div>
 
         <div class="about-divider"></div>

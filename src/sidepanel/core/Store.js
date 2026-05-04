@@ -9,17 +9,17 @@ import { bus } from './EventBus.js';
  * 存储键名
  */
 const STORAGE_KEYS = {
-  NOTES: 'slidenote_notes',              // 笔记 (sync，跨设备同步)
+  NOTES: 'slidenote_notes',              // 笔记 (local，本机存储)
   ACTIVE_NOTE_ID: 'slidenote_active_id',
 };
 
 /**
- * Chrome Storage Sync API 限制
- * 单个 item 最大约 8KB (实际 8192 字节，JSON 字符串会更大)
- * 保守估计为 7000 字节，留有余量
+ * Chrome Storage Local API 限制
+ * 总容量约 5-10MB（取决于设备可用空间），单项无硬性限制
+ * 保守估计为 5MB
  */
-const MAX_ITEM_SIZE = 7000;
-const MAX_TOTAL_SIZE = 90000; // 总容量约 100KB，保守估计 90KB
+const MAX_ITEM_SIZE = 5 * 1024 * 1024;
+const MAX_TOTAL_SIZE = 5 * 1024 * 1024; // 5MB
 
 /**
  * 简单的 EventEmitter 实现
@@ -86,8 +86,8 @@ export class Store extends EventEmitter {
    * 初始化：从 Chrome Storage 加载数据
    */
   async init() {
-    // 从 sync 存储读取数据
-    const result = await chrome.storage.sync.get({
+    // 从 local 存储读取数据
+    const result = await chrome.storage.local.get({
       [STORAGE_KEYS.NOTES]: [],
       [STORAGE_KEYS.ACTIVE_NOTE_ID]: null,
     });
@@ -125,6 +125,7 @@ export class Store extends EventEmitter {
     };
 
     this.state.notes.unshift(note);
+    this._sortNotes();
     this.state.activeNoteId = note.id;
 
     await this._persist();
@@ -227,7 +228,7 @@ export class Store extends EventEmitter {
     // 只在值真的变化时才写入存储
     if (this.state.activeNoteId !== id) {
       this.state.activeNoteId = id;
-      await chrome.storage.sync.set({
+      await chrome.storage.local.set({
         [STORAGE_KEYS.ACTIVE_NOTE_ID]: id,
       });
       this.emit('active-changed', id);
@@ -243,10 +244,10 @@ export class Store extends EventEmitter {
    * @returns {Array}
    */
   searchNotes(query) {
-    if (!query.trim()) return this.state.notes;
+    if (!query.trim()) return this.getSortedNotes();
 
     const q = query.toLowerCase();
-    return this.state.notes.filter(n =>
+    return this.getSortedNotes().filter(n =>
       n.title.toLowerCase().includes(q) ||
       n.content.toLowerCase().includes(q)
     );
@@ -265,22 +266,10 @@ export class Store extends EventEmitter {
    * @param {string} id
    */
   async moveNoteToTop(id) {
-    const noteIndex = this.state.notes.findIndex(n => n.id === id);
-    if (noteIndex <= 0) return; // 已经在顶部或不存在
+    const moved = this._moveNoteWithinGroup(id, 0);
+    if (!moved) return;
 
-    const currentNotes = [...this.state.notes];
-    const maxOrder = Math.max(...currentNotes.map(n => n.order ?? 0), 0);
-    const note = this.state.notes.find(n => n.id === id);
-    if (note) {
-      note.order = maxOrder + 1;
-      note.updatedAt = Date.now();
-      this._localChanges.set(id, Date.now());
-    }
-
-    this._sortNotes();
-    await this._persist();
-    this.emit('change');
-    this.emit('note-reordered', this.state.notes);
+    await this._commitReorder();
   }
 
   /**
@@ -294,6 +283,7 @@ export class Store extends EventEmitter {
     // 切换置顶状态
     note.pinned = !note.pinned;
     note.updatedAt = Date.now();
+    this._sortNotes();
 
     // 持久化并通知
     await this._persist();
@@ -306,14 +296,7 @@ export class Store extends EventEmitter {
    * @returns {Array} 排序后的笔记数组
    */
   getSortedNotes() {
-    const pinned = this.state.notes.filter(n => n.pinned);
-    const unpinned = this.state.notes.filter(n => !n.pinned);
-
-    // 各自按 order 降序排序（大的在前）
-    pinned.sort((a, b) => (b.order ?? 0) - (a.order ?? 0));
-    unpinned.sort((a, b) => (b.order ?? 0) - (a.order ?? 0));
-
-    return [...pinned, ...unpinned];
+    return this.state.notes.slice().sort((a, b) => this._compareNotes(a, b));
   }
 
   /**
@@ -321,22 +304,14 @@ export class Store extends EventEmitter {
    * @param {string} id
    */
   async moveNoteToBottom(id) {
-    const noteIndex = this.state.notes.findIndex(n => n.id === id);
-    const lastIndex = this.state.notes.length - 1;
-    if (noteIndex === -1 || noteIndex === lastIndex) return;
-
-    const minOrder = Math.min(...this.state.notes.map(n => n.order ?? 0), 0);
     const note = this.state.notes.find(n => n.id === id);
-    if (note) {
-      note.order = minOrder - 1;
-      note.updatedAt = Date.now();
-      this._localChanges.set(id, Date.now());
-    }
+    if (!note) return;
 
-    this._sortNotes();
-    await this._persist();
-    this.emit('change');
-    this.emit('note-reordered', this.state.notes);
+    const groupNotes = this._getGroupNotes(note.pinned || false);
+    const moved = this._moveNoteWithinGroup(id, groupNotes.length - 1);
+    if (!moved) return;
+
+    await this._commitReorder();
   }
 
   /**
@@ -344,27 +319,17 @@ export class Store extends EventEmitter {
    * @param {string} id
    */
   async moveNoteUp(id) {
-    const noteIndex = this.state.notes.findIndex(n => n.id === id);
-    if (noteIndex <= 0) return; // 已经在顶部或不存在
+    const note = this.state.notes.find(n => n.id === id);
+    if (!note) return;
 
-    const note = this.state.notes[noteIndex];
-    const prevNote = this.state.notes[noteIndex - 1];
+    const groupNotes = this._getGroupNotes(note.pinned || false);
+    const currentIndex = groupNotes.findIndex(item => item.id === id);
+    if (currentIndex <= 0) return;
 
-    // 交换 order 值
-    const noteOrder = note.order ?? 0;
-    const prevOrder = prevNote.order ?? 0;
-    note.order = prevOrder;
-    prevNote.order = noteOrder;
-    note.updatedAt = Date.now();
-    prevNote.updatedAt = Date.now();
+    const moved = this._moveNoteWithinGroup(id, currentIndex - 1);
+    if (!moved) return;
 
-    this._localChanges.set(id, Date.now());
-    this._localChanges.set(prevNote.id, Date.now());
-
-    this._sortNotes();
-    await this._persist();
-    this.emit('change');
-    this.emit('note-reordered', this.state.notes);
+    await this._commitReorder();
   }
 
   /**
@@ -372,28 +337,32 @@ export class Store extends EventEmitter {
    * @param {string} id
    */
   async moveNoteDown(id) {
-    const noteIndex = this.state.notes.findIndex(n => n.id === id);
-    const lastIndex = this.state.notes.length - 1;
-    if (noteIndex === -1 || noteIndex >= lastIndex) return;
+    const note = this.state.notes.find(n => n.id === id);
+    if (!note) return;
 
-    const note = this.state.notes[noteIndex];
-    const nextNote = this.state.notes[noteIndex + 1];
+    const groupNotes = this._getGroupNotes(note.pinned || false);
+    const currentIndex = groupNotes.findIndex(item => item.id === id);
+    if (currentIndex === -1 || currentIndex >= groupNotes.length - 1) return;
 
-    // 交换 order 值
-    const noteOrder = note.order ?? 0;
-    const nextOrder = nextNote.order ?? 0;
-    note.order = nextOrder;
-    nextNote.order = noteOrder;
-    note.updatedAt = Date.now();
-    nextNote.updatedAt = Date.now();
+    const moved = this._moveNoteWithinGroup(id, currentIndex + 1);
+    if (!moved) return;
 
-    this._localChanges.set(id, Date.now());
-    this._localChanges.set(nextNote.id, Date.now());
+    await this._commitReorder();
+  }
 
-    this._sortNotes();
-    await this._persist();
-    this.emit('change');
-    this.emit('note-reordered', this.state.notes);
+  /**
+   * 将笔记移动到同组内指定位置（用于拖拽排序）
+   * @param {string} noteId - 要移动的笔记 ID
+   * @param {number} targetIndex - 目标位置索引（在同组排序后的数组中）
+   */
+  async moveNoteToPosition(noteId, targetIndex) {
+    const note = this.state.notes.find(n => n.id === noteId);
+    if (!note) return;
+
+    const moved = this._moveNoteWithinGroup(noteId, targetIndex);
+    if (!moved) return;
+
+    await this._commitReorder();
   }
 
   /**
@@ -409,7 +378,7 @@ export class Store extends EventEmitter {
 
     try {
       // 获取当前存储的数据，用于比较是否真的有变化
-      const currentSync = await chrome.storage.sync.get({
+      const currentSync = await chrome.storage.local.get({
         [STORAGE_KEYS.NOTES]: [],
         [STORAGE_KEYS.ACTIVE_NOTE_ID]: null,
       });
@@ -424,7 +393,7 @@ export class Store extends EventEmitter {
       if (JSON.stringify(this.state.notes) !== JSON.stringify(currentNotes) ||
           currentActiveId !== this.state.activeNoteId) {
         operations.push(
-          chrome.storage.sync.set({
+          chrome.storage.local.set({
             [STORAGE_KEYS.NOTES]: this.state.notes,
             [STORAGE_KEYS.ACTIVE_NOTE_ID]: this.state.activeNoteId,
           })
@@ -439,7 +408,7 @@ export class Store extends EventEmitter {
       // 捕获 Chrome Storage 错误并转换为友好的错误信息
       if (error.message?.includes('QUOTA_BYTES') || error.message?.includes('quota')) {
         const currentSize = JSON.stringify(this.state.notes).length;
-        throw new Error(`STORAGE_QUOTA_EXCEEDED: 同步数据大小 (${Math.round(currentSize / 1024)}KB) 超过 Chrome Storage 限制。\n\n请删除一些笔记后再试。`);
+        throw new Error(`STORAGE_QUOTA_EXCEEDED: 数据大小 (${Math.round(currentSize / 1024)}KB) 超过 Chrome Storage 限制。\n\n请删除一些笔记后再试。`);
       }
       throw error;
     } finally {
@@ -504,7 +473,7 @@ export class Store extends EventEmitter {
    * @private
    */
   _sortNotesArray(notes) {
-    return notes.sort((a, b) => (b.order ?? 0) - (a.order ?? 0));
+    return notes.sort((a, b) => this._compareNotes(a, b));
   }
 
   /**
@@ -512,7 +481,73 @@ export class Store extends EventEmitter {
    * @private
    */
   _sortNotes() {
-    this.state.notes.sort((a, b) => (b.order ?? 0) - (a.order ?? 0));
+    this.state.notes.sort((a, b) => this._compareNotes(a, b));
+  }
+
+  /**
+   * 比较两个笔记的显示顺序
+   * @private
+   */
+  _compareNotes(a, b) {
+    const pinDiff = Number(!!b.pinned) - Number(!!a.pinned);
+    if (pinDiff !== 0) return pinDiff;
+
+    const orderDiff = (b.order ?? 0) - (a.order ?? 0);
+    if (orderDiff !== 0) return orderDiff;
+
+    const updatedDiff = (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    if (updatedDiff !== 0) return updatedDiff;
+
+    return (b.createdAt ?? 0) - (a.createdAt ?? 0);
+  }
+
+  /**
+   * 获取某个分组内的有序笔记
+   * @private
+   */
+  _getGroupNotes(isPinned) {
+    return this.state.notes
+      .filter(note => !!note.pinned === !!isPinned)
+      .sort((a, b) => this._compareNotes(a, b));
+  }
+
+  /**
+   * 将分组内笔记重排到指定位置
+   * @private
+   */
+  _moveNoteWithinGroup(noteId, targetIndex) {
+    const note = this.state.notes.find(item => item.id === noteId);
+    if (!note) return false;
+
+    const groupNotes = this._getGroupNotes(note.pinned || false);
+    const currentIndex = groupNotes.findIndex(item => item.id === noteId);
+    if (currentIndex === -1) return false;
+
+    const nextIndex = Math.max(0, Math.min(targetIndex, groupNotes.length - 1));
+    if (currentIndex === nextIndex) return false;
+
+    groupNotes.splice(currentIndex, 1);
+    groupNotes.splice(nextIndex, 0, note);
+
+    const now = Date.now();
+    groupNotes.forEach((item, index) => {
+      item.order = groupNotes.length - index;
+      item.updatedAt = now;
+      this._localChanges.set(item.id, now);
+    });
+
+    this._sortNotes();
+    return true;
+  }
+
+  /**
+   * 提交一次排序变更
+   * @private
+   */
+  async _commitReorder() {
+    await this._persist();
+    this.emit('change');
+    this.emit('note-reordered', this.state.notes);
   }
 }
 
@@ -536,8 +571,8 @@ export class SyncManager {
    */
   _setupListener() {
     chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === 'sync') {
-        // 跨设备同步
+      if (areaName === 'local') {
+        // 本地存储变化
         const hasChanges =
           changes[STORAGE_KEYS.NOTES] ||
           changes[STORAGE_KEYS.ACTIVE_NOTE_ID];
@@ -572,8 +607,8 @@ export class SyncManager {
     this._syncInProgress = true;
 
     try {
-      // 获取 sync 数据
-      const syncResult = await chrome.storage.sync.get({
+      // 获取 local 数据
+      const syncResult = await chrome.storage.local.get({
         [STORAGE_KEYS.NOTES]: [],
         [STORAGE_KEYS.ACTIVE_NOTE_ID]: null,
       });

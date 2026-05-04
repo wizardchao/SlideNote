@@ -7,14 +7,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SlideNote is a Chrome sidebar extension for quickly storing and accessing fragments of information. It uses the Chrome Side Panel API to live in the browser sidebar **without blocking page content**. Data syncs automatically across devices via Chrome Storage Sync API.
+SlideNote is a Chrome sidebar extension for quickly storing and accessing fragments of information. It uses the Chrome Side Panel API to live in the browser sidebar **without blocking page content**. Data is stored locally via Chrome Storage Local API.
 
 **Product Positioning**: SlideNote is **not a note-taking app**. Think of it as a "sticky note in your browser sidebar" or a "cloud clipboard for fragments" — for quickly storing and retrieving small pieces of information (API keys, server addresses, commands, prompts, etc.).
 
 **Core Value** (in order of importance):
 1. **Sidebar, never blocks content** — This is the unique selling point
 2. **Instant access** — Opens in < 100ms, no app switching
-3. **Auto-sync across devices** — Your fragments follow you everywhere
+3. **Local storage, fast and reliable** — Your fragments stay on your device
 4. **Real-time search** — Find anything instantly
 5. **Markdown support** — Basic formatting for keys, commands, and code (v0.0.3)
 
@@ -71,7 +71,7 @@ src/sidepanel/
 │   ├── Store.js        # Chrome Storage API wrapper, state management
 │   ├── EventBus.js     # Component communication
 │   ├── AutoSaver.js    # Debounced auto-save (1s delay)
-│   └── SyncManager.js  # Cross-device sync listener
+│   └── SyncManager.js  # Storage change listener
 │
 ├── components/         # UI components (vanilla JS)
 │   ├── Component.js    # Base component class with lifecycle
@@ -90,13 +90,13 @@ src/sidepanel/
 
 1. **User Input** → Component emits event via EventBus
 2. **EventBus** → Store methods (createNote, updateNote, deleteNote)
-3. **Store** → Chrome Storage Sync API (persists data)
-4. **Chrome Storage** → SyncManager detects changes on other devices
+3. **Store** → Chrome Storage Local API (persists data)
+4. **Chrome Storage** → SyncManager detects changes
 5. **SyncManager** → Reloads state, notifies components to refresh
 
 ### Storage Design
 
-Chrome Storage Sync API is used with these keys:
+Chrome Storage Local API is used with these keys:
 - `slidenote_notes`: Array of note objects
 - `slidenote_active_id`: Currently selected note ID
 
@@ -112,8 +112,8 @@ Note structure:
 ```
 
 **Important Storage Limits:**
-- Single item: ~8KB
-- Total capacity: ~100KB
+- Total capacity: ~5MB (conservative estimate, actual depends on available disk space)
+- No per-item size limit (unlike sync storage)
 - Write frequency: ~1/second (rate-limited)
 
 ### Component Communication Pattern
@@ -143,8 +143,7 @@ const unsubscribe = bus.on('note:select', (id) => { ... });
 
 1. **Sidebar DevTools**: Right-click sidebar → "Inspect"
 2. **Service Worker**: chrome://extensions/ → "service worker" link
-3. **Storage Viewer**: DevTools → Application → Storage → Sync Storage
-4. **Sync Testing**: Changes sync across devices in ~10 seconds
+3. **Storage Viewer**: DevTools → Application → Storage → Local Storage
 
 ## Design System
 
@@ -257,7 +256,7 @@ See `skills/README.md` for details.
 3. **CSS Variables**: Use the defined design tokens, avoid hardcoding values
 4. **Component Pattern**: Extend `Component` base class for consistent lifecycle
 5. **Event-Driven**: Use EventBus, not direct component references
-6. **Storage Awareness**: Respect Chrome Storage limits, implement warnings at 90% capacity
+6. **Storage Awareness**: Respect Chrome Storage Local limits (~5MB), implement warnings at 90% capacity
 7. **Product Positioning**: Remember this is NOT a note-taking app — it's for fragments, not articles
 
 ## Key Product Phrases to Use

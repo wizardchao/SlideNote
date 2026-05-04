@@ -17,6 +17,17 @@ export class NoteList {
     this.el = null;
     this._cleanup = [];
     this._contextMenu = null;
+    this._isDragging = false;
+    this._dragNoteId = null;
+    this._dragElement = null;
+    this._dragClone = null;
+    this._startY = 0;
+    this._suppressClick = false;
+    this._editingNoteId = null;
+    this._editingInput = null;
+    this._editingOriginalTitle = '';
+    this._onPointerMove = null;
+    this._onPointerUp = null;
     this._setupListeners();
     this._loadInitialData();
   }
@@ -113,7 +124,20 @@ export class NoteList {
     title.className = 'note-item-title';
     title.textContent = note.title || t('unnamedNote');
 
-    item.appendChild(title);
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'note-item-delete';
+    deleteBtn.type = 'button';
+    deleteBtn.ariaLabel = t('delete');
+    deleteBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M3.5 4.5h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M6.5 2.5h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M5 6.5v5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M8 6.5v5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M11 6.5v5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M4.5 4.5l.4 7.1a1 1 0 0 0 1 .9h4.2a1 1 0 0 0 1-.9l.4-7.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+
+    item.append(title, deleteBtn);
     return item;
   }
 
@@ -122,8 +146,26 @@ export class NoteList {
    */
   _bindItemEvents(container) {
     container.addEventListener('click', (e) => {
+      if (this._suppressClick) {
+        this._suppressClick = false;
+        return;
+      }
+
+      const deleteBtn = e.target.closest('.note-item-delete');
+      if (deleteBtn) {
+        e.stopPropagation();
+        const item = deleteBtn.closest('.note-item');
+        const noteId = item?.dataset.id;
+        const note = this.state.notes.find(n => n.id === noteId);
+        if (note) {
+          this.props.bus?.emit('note:delete-request', note);
+        }
+        return;
+      }
+
       const item = e.target.closest('.note-item');
       if (item) {
+        if (e.target.closest('.note-item-title-input')) return;
         const noteId = item.dataset.id;
         const note = this.state.notes.find(n => n.id === noteId);
         if (note) this._handleSelect(note);
@@ -131,6 +173,7 @@ export class NoteList {
     });
 
     container.addEventListener('contextmenu', (e) => {
+      if (this._editingInput && e.target.closest('.note-item-title-input')) return;
       const item = e.target.closest('.note-item');
       if (item) {
         e.preventDefault();
@@ -141,6 +184,86 @@ export class NoteList {
           this._showContextMenu(e, note, index);
         }
       }
+    });
+
+    // 拖拽排序（pointer events 事件委托，存活于 DOM 重建）
+    container.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      if (this.state.searchQuery) return;
+      if (e.target.closest('.note-item-delete')) return;
+      if (e.target.closest('.note-item-title-input')) return;
+      if (this._editingNoteId) return;
+
+      const item = e.target.closest('.note-item');
+      if (!item) return;
+
+      this._startY = e.clientY;
+      this._dragElement = item;
+      this._dragNoteId = item.dataset.id;
+
+      const onPointerMove = (moveEvent) => {
+        const dy = Math.abs(moveEvent.clientY - this._startY);
+        if (!this._isDragging && dy > 5) {
+          this._isDragging = true;
+          item.classList.add('dragging');
+          document.body.classList.add('is-dragging-note');
+
+          const clone = item.cloneNode(true);
+          clone.className = 'note-item drag-clone';
+          clone.style.position = 'fixed';
+          clone.style.left = item.getBoundingClientRect().left + 'px';
+          clone.style.width = item.offsetWidth + 'px';
+          clone.style.top = moveEvent.clientY - item.offsetHeight / 2 + 'px';
+          clone.style.zIndex = '9999';
+          clone.style.pointerEvents = 'none';
+          clone.style.opacity = '0.85';
+          document.body.appendChild(clone);
+          this._dragClone = clone;
+        }
+
+        if (this._isDragging && this._dragClone) {
+          this._dragClone.style.top = moveEvent.clientY - item.offsetHeight / 2 + 'px';
+          this._updateDropIndicator(moveEvent.clientY);
+        }
+      };
+
+      const onPointerUp = async (upEvent) => {
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+
+        if (this._isDragging) {
+          const dropLocation = this._getDropLocation(upEvent.clientY);
+          if (dropLocation) {
+            const dragId = this._dragNoteId;
+            this._suppressClick = true;
+            this._cleanupDrag();
+            await this.props.store?.moveNoteToPosition(dragId, dropLocation.targetIndex);
+            return;
+          }
+          this._cleanupDrag();
+        }
+
+        this._dragElement = null;
+        this._dragNoteId = null;
+      };
+
+      document.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', onPointerUp);
+    });
+
+    container.addEventListener('dblclick', (e) => {
+      const titleEl = e.target.closest('.note-item-title');
+      if (!titleEl) return;
+
+      const item = titleEl.closest('.note-item');
+      const noteId = item?.dataset.id;
+      const note = this.state.notes.find(n => n.id === noteId);
+      if (!item || !note) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      this._handleSelect(note);
+      this._startTitleEdit(item, note);
     });
   }
 
@@ -192,6 +315,9 @@ export class NoteList {
   _handleStoreChange() {
     if (!this.el) return;
 
+    // 拖拽中跳过重建，避免拖拽状态丢失
+    if (this._isDragging) return;
+
     // 同步 store 端的 activeId（跨设备同步场景）
     this.state.activeId = this.props.store?.state.activeNoteId ?? this.state.activeId;
 
@@ -238,11 +364,16 @@ export class NoteList {
     if (this._contextMenu) {
       this._contextMenu.close();
     }
+
+    const groupNotes = this.props.store?.getSortedNotes()
+      .filter(item => !!item.pinned === !!note.pinned) || [];
+    const groupIndex = groupNotes.findIndex(item => item.id === note.id);
+
     this._contextMenu = showContextMenu({
       x: e.clientX,
       y: e.clientY,
-      index,
-      total: this.state.notes.length,
+      index: groupIndex === -1 ? index : groupIndex,
+      total: groupNotes.length || this.state.notes.length,
       note,
       onSelect: (action) => this._handleMenuAction(action, note),
     });
@@ -268,7 +399,211 @@ export class NoteList {
     }
   }
 
+  /**
+   * 开始编辑笔记标题
+   * @param {HTMLElement} item
+   * @param {Object} note
+   */
+  _startTitleEdit(item, note) {
+    if (this._editingNoteId === note.id && this._editingInput) {
+      this._editingInput.focus();
+      this._editingInput.select();
+      return;
+    }
+
+    if (this._editingInput) {
+      this._commitTitleEdit();
+    }
+
+    const titleEl = item.querySelector('.note-item-title');
+    if (!titleEl) return;
+
+    this._editingNoteId = note.id;
+    this._editingOriginalTitle = note.title || '';
+
+    const input = document.createElement('input');
+    input.className = 'note-item-title-input';
+    input.type = 'text';
+    input.value = note.title || '';
+    input.placeholder = t('unnamedNote');
+
+    input.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+    input.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+    });
+    input.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this._commitTitleEdit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        this._cancelTitleEdit();
+      }
+    });
+    input.addEventListener('blur', () => {
+      this._commitTitleEdit();
+    });
+
+    item.classList.add('editing');
+    titleEl.replaceWith(input);
+    this._editingInput = input;
+
+    requestAnimationFrame(() => {
+      if (this._editingInput === input) {
+        input.focus();
+        input.select();
+      }
+    });
+  }
+
+  /**
+   * 提交标题编辑
+   */
+  async _commitTitleEdit() {
+    const input = this._editingInput;
+    const noteId = this._editingNoteId;
+    if (!input || !noteId) return;
+
+    const item = input.closest('.note-item');
+    const note = this.props.store?.state.notes.find(n => n.id === noteId);
+    const nextTitle = input.value.trim();
+    const prevTitle = this._editingOriginalTitle;
+
+    this._editingInput = null;
+    this._editingNoteId = null;
+    this._editingOriginalTitle = '';
+
+    this._restoreTitleNode(item, nextTitle);
+
+    if (note && nextTitle !== prevTitle) {
+      await this.props.store?.updateNote(noteId, { title: nextTitle });
+    }
+  }
+
+  /**
+   * 取消标题编辑
+   */
+  _cancelTitleEdit() {
+    const input = this._editingInput;
+    const item = input?.closest('.note-item');
+    if (!input || !item) return;
+
+    this._editingInput = null;
+    this._editingNoteId = null;
+    const originalTitle = this._editingOriginalTitle;
+    this._editingOriginalTitle = '';
+    this._restoreTitleNode(item, originalTitle);
+  }
+
+  /**
+   * 恢复标题展示节点
+   * @param {HTMLElement|null} item
+   * @param {string} title
+   */
+  _restoreTitleNode(item, title) {
+    if (!item) return;
+
+    const currentInput = item.querySelector('.note-item-title-input');
+    if (!currentInput) return;
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'note-item-title';
+    titleEl.textContent = title || t('unnamedNote');
+
+    currentInput.replaceWith(titleEl);
+    item.classList.remove('editing');
+  }
+
+  /**
+   * 清除所有拖拽放置指示器
+   */
+  _clearDropIndicators() {
+    this.el?.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+      el.classList.remove('drag-over-top', 'drag-over-bottom');
+    });
+  }
+
+  /**
+   * 获取当前拖拽笔记可排序的同组元素
+   */
+  _getDraggableGroupElements() {
+    const dragNote = this.props.store?.state.notes.find(note => note.id === this._dragNoteId);
+    if (!dragNote || !this.el) return [];
+
+    return Array.from(this.el.querySelectorAll('.note-item')).filter((el) => {
+      if (el.dataset.id === this._dragNoteId) return false;
+      const note = this.props.store?.state.notes.find(item => item.id === el.dataset.id);
+      return note && !!note.pinned === !!dragNote.pinned;
+    });
+  }
+
+  /**
+   * 计算当前光标对应的落点位置
+   */
+  _getDropLocation(y) {
+    const groupElements = this._getDraggableGroupElements();
+    if (!groupElements.length) return null;
+
+    for (let index = 0; index < groupElements.length; index += 1) {
+      const element = groupElements[index];
+      const rect = element.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      if (y < midY) {
+        return {
+          element,
+          targetIndex: index,
+          position: 'before',
+        };
+      }
+    }
+
+    return {
+      element: groupElements[groupElements.length - 1],
+      targetIndex: groupElements.length,
+      position: 'after',
+    };
+  }
+
+  /**
+   * 根据落点刷新拖拽指示器
+   */
+  _updateDropIndicator(y) {
+    this._clearDropIndicators();
+
+    const dropLocation = this._getDropLocation(y);
+    if (!dropLocation) return;
+
+    dropLocation.element.classList.add(
+      dropLocation.position === 'before' ? 'drag-over-top' : 'drag-over-bottom'
+    );
+  }
+
+
+  /**
+   * 清理拖拽状态
+   */
+  _cleanupDrag() {
+    this._isDragging = false;
+    this._dragNoteId = null;
+    this._dragElement = null;
+    this._clearDropIndicators();
+    document.body.classList.remove('is-dragging-note');
+    this.el?.querySelectorAll('.dragging').forEach(el => {
+      el.classList.remove('dragging');
+    });
+    if (this._dragClone) {
+      this._dragClone.remove();
+      this._dragClone = null;
+    }
+  }
+
   destroy() {
+    this._cancelTitleEdit();
     if (this._contextMenu) {
       this._contextMenu.close();
     }

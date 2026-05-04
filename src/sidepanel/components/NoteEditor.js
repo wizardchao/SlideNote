@@ -3,7 +3,7 @@
  * 支持 Markdown 渲染，全局模式，默认编辑模式
  */
 
-import { formatRelativeTime } from '../utils/format.js';
+import { formatDateTime } from '../utils/format.js';
 import { t } from '../utils/i18n.js';
 import { render } from '../utils/marked.js';
 import { EditorMoreMenu } from './EditorMoreMenu.js';
@@ -40,6 +40,8 @@ export class NoteEditor {
     this._titleInput = null;
     this._textarea = null;
     this._saveStatus = null;
+    this._wordCountDisplay = null;
+    this._timeDisplay = null;
     this._saveTimer = null;
     this._pendingChanges = null;
     this._isNewNote = false;
@@ -70,14 +72,16 @@ export class NoteEditor {
 
     // 编辑器
     const editor = this._renderEditor();
+    const footer = this._renderFooter();
 
-    container.append(header, editor);
+    container.append(header, editor, footer);
 
     // 保存引用
     this._titleInput = header.querySelector('.note-title-input');
     this._textarea = editor.querySelector('.note-content-textarea');
-    this._saveStatus = header.querySelector('.note-save-status');
-    this._timeDisplay = header.querySelector('.note-time');
+    this._saveStatus = footer.querySelector('.note-save-status');
+    this._wordCountDisplay = footer.querySelector('.note-word-count');
+    this._timeDisplay = footer.querySelector('.note-time');
     this._moreBtn = header.querySelector('.btn-more');
     this._modeToggleBtn = header.querySelector('.btn-mode-toggle');
 
@@ -123,42 +127,6 @@ export class NoteEditor {
       }
     };
 
-    // 获取当前笔记在列表中的位置（使用置顶排序后的顺序）
-    const notes = this.props.store?.getSortedNotes() || [];
-    const currentIndex = notes.findIndex(n => n.id === this.state.note?.id);
-    const isFirst = currentIndex <= 0;
-    const isLast = currentIndex >= notes.length - 1;
-
-    // 向上箭头（上一篇）
-    const prevBtn = document.createElement('button');
-    prevBtn.className = 'btn-nav btn-nav-prev';
-    prevBtn.ariaLabel = t('prevNote');
-    prevBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="4 10 8 6 12 10"/>
-    </svg>`;
-    if (isFirst) {
-      prevBtn.disabled = true;
-      prevBtn.classList.add('disabled');
-    }
-    prevBtn.onclick = () => {
-      this._navigateToPrev();
-    };
-
-    // 向下箭头（下一篇）
-    const nextBtn = document.createElement('button');
-    nextBtn.className = 'btn-nav btn-nav-next';
-    nextBtn.ariaLabel = t('nextNote');
-    nextBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="4 6 8 10 12 6"/>
-    </svg>`;
-    if (isLast) {
-      nextBtn.disabled = true;
-      nextBtn.classList.add('disabled');
-    }
-    nextBtn.onclick = () => {
-      this._navigateToNext();
-    };
-
     // 模式切换按钮（预览模式显示编辑图标，编辑模式显示预览图标）
     const modeToggleBtn = document.createElement('button');
     modeToggleBtn.className = 'btn-mode-toggle';
@@ -181,26 +149,9 @@ export class NoteEditor {
       this._getMoreMenu().toggle(moreBtn);
     };
 
-    titleContainer.append(titleInput, prevBtn, nextBtn, modeToggleBtn, moreBtn);
+    titleContainer.append(titleInput, modeToggleBtn, moreBtn);
 
-    // 保存导航按钮引用，用于后续更新状态
-    this._prevBtn = prevBtn;
-    this._nextBtn = nextBtn;
-
-    // 元信息区
-    const meta = document.createElement('div');
-    meta.className = 'note-meta';
-
-    const timeDisplay = document.createElement('span');
-    timeDisplay.className = 'note-time';
-    timeDisplay.textContent = formatRelativeTime(this.state.note.updatedAt);
-
-    const saveStatus = document.createElement('span');
-    saveStatus.className = 'note-save-status';
-    saveStatus.innerHTML = `✓ ${t('saved')}`;
-
-    meta.append(timeDisplay, saveStatus);
-    header.append(titleContainer, meta);
+    header.append(titleContainer);
 
     return header;
   }
@@ -261,6 +212,7 @@ export class NoteEditor {
       const content = textarea.textContent || '';
       this._saveDebounced(this.state.note.id, { content });
       this._updatePreview(content);
+      this._updateWordCountDisplay(content);
     });
 
     // 保存预览层引用
@@ -281,6 +233,34 @@ export class NoteEditor {
 
     editor.append(textarea, previewLayer);
     return editor;
+  }
+
+  /**
+   * 渲染底部状态栏
+   * @private
+   */
+  _renderFooter() {
+    const footer = document.createElement('div');
+    footer.className = 'note-editor-footer';
+
+    const stats = document.createElement('div');
+    stats.className = 'note-editor-stats';
+
+    const wordCount = document.createElement('span');
+    wordCount.className = 'note-word-count';
+    wordCount.textContent = this._getWordCountText(this.state.note?.content || '');
+
+    const timeDisplay = document.createElement('span');
+    timeDisplay.className = 'note-time';
+    timeDisplay.textContent = this._getLastEditedText(this.state.note?.updatedAt);
+
+    const saveStatus = document.createElement('span');
+    saveStatus.className = 'note-save-status';
+    saveStatus.innerHTML = `✓ ${t('saved')}`;
+
+    stats.append(wordCount, timeDisplay);
+    footer.append(stats, saveStatus);
+    return footer;
   }
 
   /**
@@ -361,69 +341,6 @@ export class NoteEditor {
   }
 
   /**
-   * 导航到上一篇笔记
-   * @private
-   */
-  _navigateToPrev() {
-    const notes = this.props.store?.getSortedNotes() || [];
-    const currentIndex = notes.findIndex(n => n.id === this.state.note?.id);
-
-    if (currentIndex > 0) {
-      const prevNote = notes[currentIndex - 1];
-      this.props.bus?.emit('note:select', prevNote.id);
-    }
-
-    this._updateNavButtons();
-  }
-
-  /**
-   * 导航到下一篇笔记
-   * @private
-   */
-  _navigateToNext() {
-    const notes = this.props.store?.getSortedNotes() || [];
-    const currentIndex = notes.findIndex(n => n.id === this.state.note?.id);
-
-    if (currentIndex >= 0 && currentIndex < notes.length - 1) {
-      const nextNote = notes[currentIndex + 1];
-      this.props.bus?.emit('note:select', nextNote.id);
-    }
-
-    this._updateNavButtons();
-  }
-
-  /**
-   * 更新导航按钮状态（禁用/启用）
-   * @private
-   */
-  _updateNavButtons() {
-    if (!this._prevBtn || !this._nextBtn) return;
-
-    const notes = this.props.store?.getSortedNotes() || [];
-    const currentIndex = notes.findIndex(n => n.id === this.state.note?.id);
-    const isFirst = currentIndex <= 0;
-    const isLast = currentIndex >= notes.length - 1;
-
-    // 更新上一篇按钮
-    if (isFirst) {
-      this._prevBtn.disabled = true;
-      this._prevBtn.classList.add('disabled');
-    } else {
-      this._prevBtn.disabled = false;
-      this._prevBtn.classList.remove('disabled');
-    }
-
-    // 更新下一篇按钮
-    if (isLast) {
-      this._nextBtn.disabled = true;
-      this._nextBtn.classList.add('disabled');
-    } else {
-      this._nextBtn.disabled = false;
-      this._nextBtn.classList.remove('disabled');
-    }
-  }
-
-  /**
    * 获取更多菜单实例（懒加载）
    * @private
    */
@@ -494,6 +411,11 @@ export class NoteEditor {
       this._textarea = this.el.querySelector('.note-content-textarea');
       this._previewLayer = this.el.querySelector('.markdown-preview-layer');
       this._modeToggleBtn = this.el.querySelector('.btn-mode-toggle');
+      this._saveStatus = this.el.querySelector('.note-save-status');
+      this._wordCountDisplay = this.el.querySelector('.note-word-count');
+      this._timeDisplay = this.el.querySelector('.note-time');
+      this._updateTimeDisplay();
+      this._updateWordCountDisplay(note?.content || '');
 
       if (this._isNewNote) {
         this._focusTitleInput();
@@ -505,16 +427,30 @@ export class NoteEditor {
     const unsubscribeUpdate = this.props.bus?.on('note-updated', (note) => {
       if (note.id === this.state.note?.id) {
         this.setState({ note });
+        this._updateTitleDisplay();
         this._updateTimeDisplay();
+        this._updateWordCountDisplay(note.content || '');
         // 如果在预览模式，更新预览内容
         if (this._previewMode && this._previewLayer) {
           this._updatePreview(note.content || '');
         }
-        // 更新导航按钮状态
-        this._updateNavButtons();
       }
     });
     if (unsubscribeUpdate) this._cleanup.push(unsubscribeUpdate);
+
+    const unsubscribeStoreUpdate = this.props.store?.on('note-updated', (note) => {
+      if (note.id === this.state.note?.id) {
+        this.setState({ note });
+        this._updateTitleDisplay();
+        this._updateTimeDisplay();
+        this._updateWordCountDisplay(note.content || '');
+        // 如果在预览模式，更新预览内容
+        if (this._previewMode && this._previewLayer) {
+          this._updatePreview(note.content || '');
+        }
+      }
+    });
+    if (unsubscribeStoreUpdate) this._cleanup.push(unsubscribeStoreUpdate);
 
     // 监听编辑模式设置请求（用于新建笔记后自动进入编辑模式）
     const unsubscribeSetEditMode = this.props.bus?.on('editor:set-edit-mode', () => {
@@ -595,7 +531,57 @@ export class NoteEditor {
    */
   _updateTimeDisplay() {
     if (!this.state.note || !this._timeDisplay) return;
-    this._timeDisplay.textContent = formatRelativeTime(this.state.note.updatedAt);
+    this._timeDisplay.textContent = this._getLastEditedText(this.state.note.updatedAt);
+  }
+
+  /**
+   * 更新标题显示
+   * @private
+   */
+  _updateTitleDisplay() {
+    if (!this.state.note || !this._titleInput) return;
+    this._titleInput.value = this.state.note.title || '';
+  }
+
+  /**
+   * 更新字数显示
+   * @private
+   * @param {string} content
+   */
+  _updateWordCountDisplay(content) {
+    if (!this._wordCountDisplay) return;
+    this._wordCountDisplay.textContent = this._getWordCountText(content);
+  }
+
+  /**
+   * 获取字数文案
+   * @private
+   * @param {string} content
+   * @returns {string}
+   */
+  _getWordCountText(content) {
+    return `${t('wordCount') || '字数'} ${this._getWordCount(content)}`;
+  }
+
+  /**
+   * 获取最后修改时间文案
+   * @private
+   * @param {number} timestamp
+   * @returns {string}
+   */
+  _getLastEditedText(timestamp) {
+    if (!timestamp) return '';
+    return `${t('lastEdited') || '最后编辑'} ${formatDateTime(timestamp)}`;
+  }
+
+  /**
+   * 统计字数（忽略空白字符）
+   * @private
+   * @param {string} content
+   * @returns {number}
+   */
+  _getWordCount(content) {
+    return (content || '').replace(/\s+/g, '').length;
   }
 
   /**

@@ -18,6 +18,23 @@ export function formatRelativeTime(timestamp) {
 }
 
 /**
+ * 格式化时间戳为本地日期时间
+ * @param {number} timestamp 时间戳（毫秒）
+ * @returns {string} 日期时间字符串
+ */
+export function formatDateTime(timestamp) {
+  if (!timestamp) return '';
+
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(timestamp);
+}
+
+/**
  * 截断文本
  * @param {string} text 原文本
  * @param {number} maxLength 最大长度

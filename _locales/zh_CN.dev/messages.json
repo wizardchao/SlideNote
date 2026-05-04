@@ -119,6 +119,10 @@
     "message": "最后编辑",
     "description": "最后编辑时间"
   },
+  "wordCount": {
+    "message": "字数",
+    "description": "字数统计标签"
+  },
   "copyAsMarkdown": {
     "message": "复制为 Markdown",
     "description": "复制为 Markdown 源码"

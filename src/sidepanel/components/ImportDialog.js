@@ -268,8 +268,8 @@ export class ImportDialog {
    * @private
    */
   async #clearExistingNotes() {
-    // 清空 sync storage 中的笔记
-    await chrome.storage.sync.remove(['slidenote_notes']);
+    // 清空 local storage 中的笔记
+    await chrome.storage.local.remove(['slidenote_notes']);
     // 清空 local storage 中的网页摘录
     await chrome.storage.local.remove(['slidenote_web_clippings']);
     // 重置 store 中的笔记
